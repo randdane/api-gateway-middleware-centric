@@ -9,6 +9,8 @@ from gateway.cache.redis import close_redis, get_client, init_redis
 from gateway.config import settings
 from gateway.db.session import engine
 from gateway.jobs.manager import start_background_worker
+from gateway.logging_config import configure_logging
+from gateway.middleware.logging import LoggingMiddleware
 from gateway.routes.jobs import router as jobs_router
 from gateway.routes.proxy import router as proxy_router
 
@@ -36,6 +38,8 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    configure_logging()
+
     app = FastAPI(
         title="API Gateway",
         description="Internal API gateway for vendor API access",
@@ -45,8 +49,9 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if settings.debug else None,
     )
 
-    # Middleware will be added in Phase 8 (Step 8.1) once each is implemented.
-    # Order (outermost first): tracing → logging → rate limiting
+    # Middleware order (outermost first): tracing → logging → rate limiting.
+    # Tracing middleware will be added in Phase 7.2.
+    app.add_middleware(LoggingMiddleware)
 
     app.include_router(proxy_router)
     app.include_router(jobs_router)
