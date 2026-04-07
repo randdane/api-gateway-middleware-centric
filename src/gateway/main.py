@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from gateway.cache.redis import close_redis, get_client, init_redis
 from gateway.config import settings
 from gateway.db.session import engine
+from gateway.routes.proxy import router as proxy_router
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
     # Middleware will be added in Phase 8 (Step 8.1) once each is implemented.
     # Order (outermost first): tracing → logging → rate limiting
 
+    app.include_router(proxy_router)
     _register_routes(app)
 
     return app
