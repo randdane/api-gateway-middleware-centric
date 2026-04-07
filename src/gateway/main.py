@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from prometheus_client import make_asgi_app
 
 from gateway.admin.routes import router as admin_router
 from gateway.cache.redis import close_redis, get_client, init_redis
@@ -11,6 +12,8 @@ from gateway.db.session import engine
 from gateway.jobs.manager import start_background_worker
 from gateway.logging_config import configure_logging
 from gateway.middleware.logging import LoggingMiddleware
+from gateway.middleware.tracing import TracingMiddleware
+from gateway.observability.tracing import setup_tracing
 from gateway.routes.jobs import router as jobs_router
 from gateway.routes.proxy import router as proxy_router
 
@@ -39,6 +42,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     configure_logging()
+    setup_tracing()
 
     app = FastAPI(
         title="API Gateway",
@@ -50,13 +54,20 @@ def create_app() -> FastAPI:
     )
 
     # Middleware order (outermost first): tracing → logging → rate limiting.
-    # Tracing middleware will be added in Phase 7.2.
+    # add_middleware() wraps in reverse order, so TracingMiddleware is added
+    # last here so it ends up as the outermost layer.
     app.add_middleware(LoggingMiddleware)
+    app.add_middleware(TracingMiddleware)
 
     app.include_router(proxy_router)
     app.include_router(jobs_router)
     app.include_router(admin_router)
     _register_routes(app)
+
+    # Prometheus scrape endpoint — mounted *after* routers so the ASGI sub-app
+    # takes precedence over any route with the same prefix.
+    if settings.metrics_enabled:
+        app.mount("/metrics", make_asgi_app())
 
     return app
 
