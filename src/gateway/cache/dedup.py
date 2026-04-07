@@ -27,8 +27,7 @@ import asyncio
 import hashlib
 import json
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import AsyncIterator
 
 from redis.asyncio import Redis
@@ -158,24 +157,24 @@ async def dedup_wait(
     if the timeout expires before a message arrives.
 
     To close the race where the lock holder completes and calls
-    :func:`dedup_publish` between when this waiter checked the lock and when
-    it subscribes to the channel, we first check for a pre-stored result key
-    (written by :func:`dedup_publish` before it publishes).  If found, we
-    return immediately without ever subscribing.
-    """
-    # Fast-path: result was already stored by dedup_publish before we subscribed.
-    stored = await redis.get(_result_key(key))
-    if stored is not None:
-        if isinstance(stored, bytes):
-            stored = stored.decode()
-        return _deserialise_result(stored)
+    :func:`dedup_publish` between when this waiter checks the lock and when
+    it subscribes to the channel, we subscribe *first* and then check for a
+    pre-stored result key (written by :func:`dedup_publish` before it
+    publishes).  If found, we return immediately without polling.
 
+    If the lock holder fails without calling :func:`dedup_publish`, waiters
+    will receive ``None`` after *timeout* seconds.
+    """
     pubsub = redis.pubsub()
     await pubsub.subscribe(key)
     try:
-        deadline = asyncio.get_event_loop().time() + timeout
+        # Check stored result AFTER subscribing (race-safe).
+        stored = await redis.get(_result_key(key))
+        if stored is not None:
+            return _deserialise_result(stored if isinstance(stored, str) else stored.decode())
+        deadline = asyncio.get_running_loop().time() + timeout
         while True:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 return None
             # Poll with a short sleep to avoid busy-waiting

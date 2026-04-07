@@ -390,21 +390,24 @@ class TestDedupWait:
     # ------------------------------------------------------------------
 
     async def test_returns_immediately_when_stored_result_found(self):
-        """If the result key already exists in Redis, return without subscribing."""
+        """Subscribe happens first, but if stored result exists return without polling."""
         response = _make_response(status_code=200, body=b"fast")
         key = "dedup:abc"
         payload = _serialise_result(response)
 
         redis = _make_redis()
         redis.get = AsyncMock(return_value=payload)
+        pubsub = AsyncMock()
+        redis.pubsub = MagicMock(return_value=pubsub)
 
         result = await dedup_wait(redis, key, timeout=5.0)
 
         assert result is not None
         assert result.body == b"fast"
         assert result.status_code == 200
-        # pubsub should never have been used
-        redis.pubsub.assert_not_called()
+        # pubsub was subscribed (race-safe order), but get_message never called
+        pubsub.subscribe.assert_called_once_with(key)
+        pubsub.get_message.assert_not_called()
 
     async def test_stored_result_as_bytes_is_decoded(self):
         """Stored value may be raw bytes (decode_responses=False)."""
@@ -414,12 +417,16 @@ class TestDedupWait:
 
         redis = _make_redis()
         redis.get = AsyncMock(return_value=payload_bytes)
+        pubsub = AsyncMock()
+        redis.pubsub = MagicMock(return_value=pubsub)
 
         result = await dedup_wait(redis, key, timeout=5.0)
 
         assert result is not None
         assert result.body == b"bytes-fast"
-        redis.pubsub.assert_not_called()
+        # pubsub was subscribed (race-safe order), but get_message never called
+        pubsub.subscribe.assert_called_once_with(key)
+        pubsub.get_message.assert_not_called()
 
     async def test_checks_stored_result_key_with_correct_key(self):
         """GET must be issued against ``<key>:result``."""
