@@ -24,6 +24,7 @@ from gateway.middleware.rate_limit import (
     check_rate_limit,
     check_user_rate_limit,
 )
+from gateway.vendors.registry import VendorConfig
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +147,8 @@ class TestLuaScript:
     def test_script_references_hmget(self):
         assert "HMGET" in _TOKEN_BUCKET_LUA
 
-    def test_script_references_hmset(self):
-        assert "HMSET" in _TOKEN_BUCKET_LUA
+    def test_script_references_hset(self):
+        assert "HSET" in _TOKEN_BUCKET_LUA
 
     def test_script_references_expire(self):
         assert "EXPIRE" in _TOKEN_BUCKET_LUA
@@ -199,7 +200,31 @@ class TestRateLimitResponse:
 # ---------------------------------------------------------------------------
 
 
-def _make_app(redis: AsyncMock) -> FastAPI:
+def _make_registry(rate_limit_rpm: int = 600) -> MagicMock:
+    """Return a mock registry whose ``get()`` returns a VendorConfig with *rate_limit_rpm*."""
+    registry = MagicMock()
+    registry.get.return_value = VendorConfig(
+        id="1",
+        name="Test Vendor",
+        slug="stripe",
+        base_url="https://api.stripe.com",
+        auth_type="bearer",
+        auth_config={},
+        cache_ttl_seconds=60,
+        rate_limit_rpm=rate_limit_rpm,
+        is_active=True,
+    )
+    return registry
+
+
+def _make_registry_miss() -> MagicMock:
+    """Return a mock registry whose ``get()`` returns None (vendor not found)."""
+    registry = MagicMock()
+    registry.get.return_value = None
+    return registry
+
+
+def _make_app(redis: AsyncMock, registry=None) -> FastAPI:
     app = FastAPI()
 
     @app.get("/health")
@@ -214,14 +239,17 @@ def _make_app(redis: AsyncMock) -> FastAPI:
     async def v1_endpoint(slug: str):
         return {"slug": slug}
 
-    app.add_middleware(RateLimitMiddleware, redis=redis)
+    kwargs = {"redis": redis}
+    if registry is not None:
+        kwargs["registry"] = registry
+    app.add_middleware(RateLimitMiddleware, **kwargs)
     return app
 
 
 class TestRateLimitMiddleware:
     def test_health_path_passes_through(self):
         redis = _make_redis(eval_return=0)  # would deny if checked
-        app = _make_app(redis)
+        app = _make_app(redis, registry=_make_registry())
         client = TestClient(app, raise_server_exceptions=True)
         resp = client.get("/health")
         assert resp.status_code == 200
@@ -229,28 +257,28 @@ class TestRateLimitMiddleware:
 
     def test_vendor_path_allowed(self):
         redis = _make_redis(eval_return=1)
-        app = _make_app(redis)
+        app = _make_app(redis, registry=_make_registry())
         client = TestClient(app)
         resp = client.get("/vendors/stripe/endpoint")
         assert resp.status_code == 200
 
     def test_vendor_path_denied_returns_429(self):
         redis = _make_redis(eval_return=0)
-        app = _make_app(redis)
+        app = _make_app(redis, registry=_make_registry())
         client = TestClient(app)
         resp = client.get("/vendors/stripe/endpoint")
         assert resp.status_code == 429
 
     def test_429_response_has_retry_after_header(self):
         redis = _make_redis(eval_return=0)
-        app = _make_app(redis)
+        app = _make_app(redis, registry=_make_registry())
         client = TestClient(app)
         resp = client.get("/vendors/stripe/endpoint")
         assert "Retry-After" in resp.headers
 
     def test_429_body_has_scope_vendor(self):
         redis = _make_redis(eval_return=0)
-        app = _make_app(redis)
+        app = _make_app(redis, registry=_make_registry())
         client = TestClient(app)
         resp = client.get("/vendors/stripe/endpoint")
         body = resp.json()
@@ -259,14 +287,14 @@ class TestRateLimitMiddleware:
 
     def test_v1_path_checked(self):
         redis = _make_redis(eval_return=0)
-        app = _make_app(redis)
+        app = _make_app(redis, registry=_make_registry())
         client = TestClient(app)
         resp = client.get("/v1/stripe/resource")
         assert resp.status_code == 429
 
     def test_redis_key_contains_vendor_slug(self):
         redis = _make_redis(eval_return=1)
-        app = _make_app(redis)
+        app = _make_app(redis, registry=_make_registry())
         client = TestClient(app)
         client.get("/vendors/my-vendor/endpoint")
         redis.eval.assert_called_once()
@@ -275,7 +303,7 @@ class TestRateLimitMiddleware:
 
     def test_redis_key_format(self):
         redis = _make_redis(eval_return=1)
-        app = _make_app(redis)
+        app = _make_app(redis, registry=_make_registry())
         client = TestClient(app)
         client.get("/vendors/stripe/endpoint")
         key_arg = redis.eval.call_args[0][2]
@@ -285,10 +313,35 @@ class TestRateLimitMiddleware:
         """When Redis raises, the request should still be served (fail-open)."""
         redis = AsyncMock()
         redis.eval = AsyncMock(side_effect=ConnectionError("redis down"))
-        app = _make_app(redis)
+        app = _make_app(redis, registry=_make_registry())
         client = TestClient(app)
         resp = client.get("/vendors/stripe/endpoint")
         assert resp.status_code == 200
+
+    def test_uses_per_vendor_rpm_from_registry(self):
+        """Middleware uses rate_limit_rpm from the vendor registry."""
+        redis = _make_redis(eval_return=1)
+        registry = _make_registry(rate_limit_rpm=1200)
+        app = _make_app(redis, registry=registry)
+        client = TestClient(app)
+        client.get("/vendors/stripe/endpoint")
+        redis.eval.assert_called_once()
+        # capacity arg (ARGV[1]) is the 4th positional arg (index 3)
+        capacity_arg = redis.eval.call_args[0][3]
+        assert capacity_arg == float(1200)
+
+    def test_falls_back_to_global_rpm_when_vendor_not_in_registry(self):
+        """When the registry returns None, fall back to settings.rate_limit_vendor_rpm."""
+        from gateway.config import settings
+
+        redis = _make_redis(eval_return=1)
+        registry = _make_registry_miss()
+        app = _make_app(redis, registry=registry)
+        client = TestClient(app)
+        client.get("/vendors/unknown-vendor/endpoint")
+        redis.eval.assert_called_once()
+        capacity_arg = redis.eval.call_args[0][3]
+        assert capacity_arg == float(settings.rate_limit_vendor_rpm)
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,6 @@ Token bucket algorithm is implemented as a Redis Lua script for atomicity.
 
 from __future__ import annotations
 
-import json
 import math
 import re
 import time
@@ -29,6 +28,7 @@ from starlette.types import ASGIApp
 from gateway.auth.dependencies import UserIdentity, get_current_user
 from gateway.cache.redis import get_client
 from gateway.config import settings
+from gateway.vendors.registry import VendorRegistry, registry as default_registry
 
 logger = structlog.get_logger(__name__)
 
@@ -53,11 +53,11 @@ local new_tokens = math.min(capacity, tokens + elapsed * refill_rate)
 
 if new_tokens >= tokens_requested then
     new_tokens = new_tokens - tokens_requested
-    redis.call('HMSET', key, 'tokens', new_tokens, 'last_refill', now)
+    redis.call('HSET', key, 'tokens', new_tokens, 'last_refill', now)
     redis.call('EXPIRE', key, math.ceil(capacity / refill_rate) + 1)
     return 1  -- allowed
 else
-    redis.call('HMSET', key, 'tokens', new_tokens, 'last_refill', now)
+    redis.call('HSET', key, 'tokens', new_tokens, 'last_refill', now)
     redis.call('EXPIRE', key, math.ceil(capacity / refill_rate) + 1)
     return 0  -- denied
 end
@@ -134,11 +134,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
       error is logged.
     """
 
-    def __init__(self, app: ASGIApp, redis: Redis | None = None) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        redis: Redis | None = None,
+        registry: VendorRegistry = default_registry,
+    ) -> None:
         super().__init__(app)
         # Allow injecting a Redis client (useful for tests); fall back to the
         # module-level pool-backed client at request time.
         self._redis = redis
+        self._registry = registry
 
     def _get_redis(self) -> Redis:
         return self._redis if self._redis is not None else get_client()
@@ -151,11 +157,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         redis = self._get_redis()
         key = f"rl:vendor:{slug}"
 
+        vendor_config = self._registry.get(slug)
+        vendor_rpm = vendor_config.rate_limit_rpm if vendor_config else settings.rate_limit_vendor_rpm
+
         try:
             allowed, retry_after = await check_rate_limit(
                 redis,
                 key,
-                settings.rate_limit_vendor_rpm,
+                vendor_rpm,
                 scope="vendor",
             )
         except Exception:
