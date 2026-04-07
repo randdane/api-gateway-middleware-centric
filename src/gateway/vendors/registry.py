@@ -92,6 +92,20 @@ class VendorRegistry:
             )
         return self._adapters[slug]
 
+    def get_by_id(self, vendor_id: str) -> VendorConfig | None:
+        """Return a VendorConfig by its UUID string, or None."""
+        for config in self._vendors.values():
+            if config.id == vendor_id:
+                return config
+        return None
+
+    def get_adapter_by_id(self, vendor_id: str):
+        """Return the adapter for the vendor with the given UUID string, or None."""
+        config = self.get_by_id(vendor_id)
+        if config is None:
+            return None
+        return self.get_adapter(config.slug)
+
     def all_vendors(self) -> list[VendorConfig]:
         return list(self._vendors.values())
 

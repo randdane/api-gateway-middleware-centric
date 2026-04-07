@@ -7,6 +7,7 @@ Pipeline per request:
 
 from __future__ import annotations
 
+import uuid as _uuid
 import httpx
 import structlog
 from datetime import UTC, datetime
@@ -25,8 +26,10 @@ from gateway.cache.response_cache import (
     resolve_ttl,
     set_cached,
 )
-from gateway.db.models import VendorApiKey
+from gateway.db.models import VendorApiKey, VendorEndpoint
 from gateway.db.session import get_db
+from gateway.jobs.manager import create_job
+from gateway.jobs.models import JobCreatedResponse
 from gateway.middleware.quota import _resets_at
 from gateway.quota.tracker import check_quota, increment_quota
 from gateway.vendors.client import VendorClient
@@ -126,7 +129,56 @@ async def proxy(
         )
 
     # ------------------------------------------------------------------
-    # 2. Quota pre-check (manual, so we keep the api_key for increment)
+    # 2. Check if the endpoint is configured as an async job
+    # ------------------------------------------------------------------
+    endpoint_record: VendorEndpoint | None = None
+    if vendor_config.id:
+        ep_result = await db.execute(
+            select(VendorEndpoint).where(
+                VendorEndpoint.vendor_id == _uuid.UUID(vendor_config.id),
+                VendorEndpoint.path == endpoint_path,
+            )
+        )
+        endpoint_record = ep_result.scalar_one_or_none()
+
+    if isinstance(endpoint_record, VendorEndpoint) and endpoint_record.is_async_job:
+        # Read body now so we can store it
+        body_bytes: bytes = await request.body()
+        forward_hdrs: dict[str, str] = {
+            k.lower(): v
+            for k, v in request.headers.items()
+        }
+        request_payload = {
+            "method": request.method,
+            "path": endpoint_path,
+            "params": dict(request.query_params),
+            "body": body_bytes.decode(errors="replace") if body_bytes else None,
+            "forward_headers": {
+                k: v
+                for k, v in forward_hdrs.items()
+                if k not in ("host", "authorization")
+            },
+            "headers": forward_hdrs,
+        }
+        job = await create_job(
+            db,
+            vendor_id=_uuid.UUID(vendor_config.id),
+            endpoint_id=endpoint_record.id,
+            requested_by=user.sub,
+            request_payload=request_payload,
+        )
+        return Response(
+            content=JobCreatedResponse(
+                job_id=job.id,
+                status=job.status,
+                poll_url=f"/jobs/{job.id}",
+            ).model_dump_json(),
+            status_code=status.HTTP_202_ACCEPTED,
+            media_type="application/json",
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Quota pre-check (manual, so we keep the api_key for increment)
     # ------------------------------------------------------------------
     api_key = await _load_active_api_key(db, vendor_config)
     quota_applicable = (

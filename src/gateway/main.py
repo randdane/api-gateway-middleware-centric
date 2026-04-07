@@ -7,6 +7,8 @@ from fastapi.responses import JSONResponse
 from gateway.cache.redis import close_redis, get_client, init_redis
 from gateway.config import settings
 from gateway.db.session import engine
+from gateway.jobs.manager import start_background_worker
+from gateway.routes.jobs import router as jobs_router
 from gateway.routes.proxy import router as proxy_router
 
 logger = structlog.get_logger(__name__)
@@ -20,9 +22,13 @@ async def lifespan(app: FastAPI):
     init_redis()
     logger.info("gateway.redis.connected")
 
+    worker_task = start_background_worker()
+    logger.info("gateway.job_worker.started")
+
     yield
 
     # Shutdown
+    worker_task.cancel()
     await close_redis()
     await engine.dispose()
     logger.info("gateway.stopped")
@@ -42,6 +48,7 @@ def create_app() -> FastAPI:
     # Order (outermost first): tracing → logging → rate limiting
 
     app.include_router(proxy_router)
+    app.include_router(jobs_router)
     _register_routes(app)
 
     return app
