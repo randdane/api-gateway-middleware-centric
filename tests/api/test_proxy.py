@@ -67,6 +67,7 @@ def mock_registry(vendor_config, mock_adapter):
     reg.get_adapter.side_effect = (
         lambda slug: mock_adapter if slug == VENDOR_SLUG else None
     )
+    reg.reload_if_stale = AsyncMock()
     return reg
 
 
@@ -476,3 +477,27 @@ class TestQuotaExceeded:
         assert resp.status_code == 429
         body = resp.json()
         assert body["detail"]["error"] == "quota_exceeded"
+
+
+class TestNoAdapter:
+    """When registry returns no adapter for a known vendor, expect 503."""
+
+    def test_no_adapter_returns_503(self, mock_registry, mock_redis, mock_db, vendor_config):
+        # Registry recognises the vendor but has no adapter for it
+        no_adapter_registry = MagicMock(spec=VendorRegistry)
+        no_adapter_registry.get.side_effect = (
+            lambda slug: vendor_config if slug == VENDOR_SLUG else None
+        )
+        no_adapter_registry.get_adapter.return_value = None
+        no_adapter_registry.reload_if_stale = AsyncMock()
+
+        app = _build_app(no_adapter_registry, mock_redis, mock_db)
+        with patch("gateway.routes.proxy.registry", no_adapter_registry):
+            with TestClient(app) as client:
+                resp = client.get(
+                    f"/vendors/{VENDOR_SLUG}/v1/data",
+                    headers={"Authorization": "Bearer fake-token"},
+                )
+
+        assert resp.status_code == 503
+        assert "adapter" in resp.json()["detail"].lower()

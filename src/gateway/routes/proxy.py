@@ -7,6 +7,7 @@ Pipeline per request:
 
 from __future__ import annotations
 
+import httpx
 import structlog
 from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -26,6 +27,7 @@ from gateway.cache.response_cache import (
 )
 from gateway.db.models import VendorApiKey
 from gateway.db.session import get_db
+from gateway.middleware.quota import _resets_at
 from gateway.quota.tracker import check_quota, increment_quota
 from gateway.vendors.client import VendorClient
 from gateway.vendors.registry import VendorConfig, registry
@@ -102,6 +104,11 @@ async def proxy(
     """Catch-all proxy that forwards requests to the configured vendor."""
 
     # ------------------------------------------------------------------
+    # 0. Ensure registry is fresh
+    # ------------------------------------------------------------------
+    await registry.reload_if_stale(db)
+
+    # ------------------------------------------------------------------
     # 1. Resolve vendor
     # ------------------------------------------------------------------
     vendor_config: VendorConfig | None = registry.get(vendor_slug)
@@ -129,7 +136,8 @@ async def proxy(
     )
 
     if quota_applicable:
-        assert api_key is not None  # narrowing for type checkers
+        if api_key is None:
+            raise HTTPException(status_code=500, detail="Quota check inconsistency")
         try:
             allowed, current_count = await check_quota(
                 redis,
@@ -152,9 +160,11 @@ async def proxy(
                 detail={
                     "error": "quota_exceeded",
                     "vendor": vendor_slug,
-                    "used": current_count,
+                    "key": api_key.key_name,
                     "limit": api_key.quota_limit,
+                    "used": current_count,
                     "period": api_key.quota_period,
+                    "resets_at": _resets_at(api_key.quota_period).isoformat(),
                 },
             )
 
@@ -209,13 +219,18 @@ async def proxy(
             and k.lower() not in ("host", "authorization")
         }
 
-        vendor_response = await client.request(
-            request.method,
-            endpoint_path,
-            headers=forward_headers,
-            content=body if body else None,
-            params=params if params else None,
-        )
+        try:
+            vendor_response = await client.request(
+                request.method,
+                endpoint_path,
+                headers=forward_headers,
+                content=body if body is not None else None,
+                params=params if params else None,
+            )
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="Vendor request timed out")
+        except httpx.ConnectError:
+            raise HTTPException(status_code=502, detail="Could not connect to vendor")
 
         response_headers = dict(vendor_response.headers)
         response_body: bytes = vendor_response.content
