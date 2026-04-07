@@ -18,11 +18,21 @@ from __future__ import annotations
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor, SpanExporter, SpanExportResult
 from opentelemetry.trace import NoOpTracer
 
 from gateway.config import settings
+
+
+class _NullSpanExporter(SpanExporter):
+    """Discards all spans immediately — zero I/O, zero memory growth."""
+
+    def export(self, spans):  # type: ignore[override]
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self) -> None:
+        pass
+
 
 # Module-level tracer — replaced by setup_tracing() at app startup.
 # Falls back to NoOpTracer so imports before setup_tracing() are safe.
@@ -58,13 +68,10 @@ def setup_tracing() -> None:
         otlp_exporter = OTLPSpanExporter(endpoint=settings.otel_endpoint)
         provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
     else:
-        # No-op path: register a simple processor with an in-memory exporter
-        # that immediately discards spans.  This keeps trace context propagation
-        # working (valid trace/span IDs) without any I/O.
-        noop_exporter = InMemorySpanExporter()
-        provider.add_span_processor(SimpleSpanProcessor(noop_exporter))
-        # Immediately clear the in-memory buffer to avoid memory growth.
-        noop_exporter.clear()
+        # No-op path: register a simple processor with a null exporter that
+        # discards spans immediately.  This keeps trace context propagation
+        # working (valid trace/span IDs) without any I/O or memory growth.
+        provider.add_span_processor(SimpleSpanProcessor(_NullSpanExporter()))
 
     trace.set_tracer_provider(provider)
     _provider = provider

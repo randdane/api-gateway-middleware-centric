@@ -94,7 +94,8 @@ class TracingMiddleware(BaseHTTPMiddleware):
             # Set standard HTTP span attributes.
             # ----------------------------------------------------------------
             span.set_attribute("http.method", method)
-            span.set_attribute("http.url", str(request.url))
+            span.set_attribute("http.url", request.url.path)
+            span.set_attribute("http.target", request.url.path)
             if vendor_slug != "unknown":
                 span.set_attribute("vendor.slug", vendor_slug)
 
