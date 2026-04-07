@@ -4,6 +4,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from gateway.admin.routes import router as admin_router
 from gateway.cache.redis import close_redis, get_client, init_redis
 from gateway.config import settings
 from gateway.db.session import engine
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
 
     app.include_router(proxy_router)
     app.include_router(jobs_router)
+    app.include_router(admin_router)
     _register_routes(app)
 
     return app
