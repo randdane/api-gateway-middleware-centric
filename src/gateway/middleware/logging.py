@@ -15,7 +15,6 @@ import structlog
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
-from starlette.types import ASGIApp
 
 logger = structlog.get_logger(__name__)
 
@@ -78,9 +77,6 @@ class LoggingMiddleware(BaseHTTPMiddleware):
     The middleware is intentionally fail-safe: logging errors are swallowed so
     that a logging bug never breaks a request.
     """
-
-    def __init__(self, app: ASGIApp) -> None:
-        super().__init__(app)
 
     async def dispatch(self, request: Request, call_next) -> Response:
         # ------------------------------------------------------------------

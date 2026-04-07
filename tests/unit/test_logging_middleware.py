@@ -365,6 +365,52 @@ class TestExceptionHandling:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# quota_remaining field
+# ---------------------------------------------------------------------------
+
+
+class TestQuotaRemainingField:
+    def test_quota_remaining_parsed_from_header(self):
+        """quota_remaining is parsed as int from X-Quota-Remaining header."""
+        app = _make_app(response_headers={"X-Quota-Remaining": "42"})
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with patch("gateway.middleware.logging.logger") as mock_logger:
+            client.get("/vendors/stripe/endpoint")
+
+        _, kwargs = mock_logger.info.call_args
+        assert kwargs["quota_remaining"] == 42
+
+    def test_quota_remaining_none_when_header_absent(self):
+        """quota_remaining is None when X-Quota-Remaining header is not present."""
+        app = _make_app()
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with patch("gateway.middleware.logging.logger") as mock_logger:
+            client.get("/vendors/stripe/endpoint")
+
+        _, kwargs = mock_logger.info.call_args
+        assert kwargs["quota_remaining"] is None
+
+    def test_quota_remaining_non_integer_value(self):
+        """quota_remaining is None (or raw string) when header is not a valid integer."""
+        app = _make_app(response_headers={"X-Quota-Remaining": "not-a-number"})
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with patch("gateway.middleware.logging.logger") as mock_logger:
+            client.get("/vendors/stripe/endpoint")
+
+        _, kwargs = mock_logger.info.call_args
+        # The middleware swallows the ValueError and leaves quota_remaining as None
+        assert kwargs["quota_remaining"] is None
+
+
+# ---------------------------------------------------------------------------
+# Non-vendor paths
+# ---------------------------------------------------------------------------
+
+
 class TestNonVendorPaths:
     def test_health_path_has_null_vendor_slug(self):
         """vendor_slug is None for non-vendor paths like /health."""
