@@ -11,6 +11,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from redis.asyncio import Redis
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.admin.models import (
@@ -42,6 +43,31 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
+
+
+async def _build_quota_key_usages(vendor_id: uuid.UUID, keys, redis) -> list:
+    """Build ApiKeyQuotaUsage entries for a list of VendorApiKey objects."""
+    key_usages: list[ApiKeyQuotaUsage] = []
+    for key in keys:
+        current_usage = 0
+        if key.quota_limit is not None and key.quota_period is not None:
+            current_usage = await get_quota_usage(
+                redis,
+                str(vendor_id),
+                str(key.id),
+                key.quota_period,
+            )
+        key_usages.append(
+            ApiKeyQuotaUsage(
+                key_id=key.id,
+                key_name=key.key_name,
+                quota_limit=key.quota_limit,
+                quota_period=key.quota_period,
+                current_usage=current_usage,
+                is_active=key.is_active,
+            )
+        )
+    return key_usages
 
 
 async def _get_vendor_or_404(db: AsyncSession, vendor_id: uuid.UUID) -> Vendor:
@@ -88,7 +114,11 @@ async def create_vendor(
         rate_limit_rpm=body.rate_limit_rpm,
     )
     db.add(vendor)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=f"A vendor with slug '{body.slug}' already exists")
     await db.refresh(vendor)
     logger.info("admin.vendor.created", vendor_id=str(vendor.id), slug=vendor.slug)
     return VendorResponse.model_validate(vendor)
@@ -160,26 +190,7 @@ async def get_vendor_quota(
     )
     api_keys = result.scalars().all()
 
-    key_usages: list[ApiKeyQuotaUsage] = []
-    for key in api_keys:
-        current_usage = 0
-        if key.quota_limit is not None and key.quota_period is not None:
-            current_usage = await get_quota_usage(
-                redis,
-                str(vendor_id),
-                str(key.id),
-                key.quota_period,
-            )
-        key_usages.append(
-            ApiKeyQuotaUsage(
-                key_id=key.id,
-                key_name=key.key_name,
-                quota_limit=key.quota_limit,
-                quota_period=key.quota_period,
-                current_usage=current_usage,
-                is_active=key.is_active,
-            )
-        )
+    key_usages = await _build_quota_key_usages(vendor_id, api_keys, redis)
 
     return VendorQuotaResponse(
         vendor_id=vendor_id,
@@ -231,26 +242,7 @@ async def update_vendor_quota(
     )
     all_keys = all_keys_result.scalars().all()
 
-    key_usages: list[ApiKeyQuotaUsage] = []
-    for key in all_keys:
-        current_usage = 0
-        if key.quota_limit is not None and key.quota_period is not None:
-            current_usage = await get_quota_usage(
-                redis,
-                str(vendor_id),
-                str(key.id),
-                key.quota_period,
-            )
-        key_usages.append(
-            ApiKeyQuotaUsage(
-                key_id=key.id,
-                key_name=key.key_name,
-                quota_limit=key.quota_limit,
-                quota_period=key.quota_period,
-                current_usage=current_usage,
-                is_active=key.is_active,
-            )
-        )
+    key_usages = await _build_quota_key_usages(vendor_id, all_keys, redis)
 
     return VendorQuotaResponse(
         vendor_id=vendor_id,
@@ -329,7 +321,6 @@ async def reload_config(
 ) -> ConfigReloadResponse:
     """Reload vendor registry from DB and invalidate adapter cache."""
     await registry.load(db)
-    registry.invalidate()
     vendor_count = len(registry.all_vendors())
     logger.info("admin.config.reloaded", vendor_count=vendor_count)
     return ConfigReloadResponse(

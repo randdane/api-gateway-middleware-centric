@@ -16,6 +16,8 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from sqlalchemy.exc import IntegrityError
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -286,6 +288,46 @@ class TestVendorCreate:
         # db.add was called once
         mock_db.add.assert_called_once()
         mock_db.commit.assert_called_once()
+
+
+    def test_create_vendor_duplicate_slug_returns_409(self):
+        mock_db = AsyncMock()
+        mock_db.add = MagicMock()
+        mock_db.commit = AsyncMock(side_effect=IntegrityError("duplicate", {}, None))
+        mock_db.rollback = AsyncMock()
+        mock_db.execute = AsyncMock()
+
+        mock_redis = _make_mock_redis()
+
+        app = create_app()
+
+        async def _override_user():
+            return ADMIN_USER
+
+        async def _override_redis():
+            yield mock_redis
+
+        async def _override_db():
+            yield mock_db
+
+        app.dependency_overrides[get_current_user] = _override_user
+        app.dependency_overrides[get_redis] = _override_redis
+        app.dependency_overrides[get_db] = _override_db
+
+        payload = {
+            "name": "Duplicate Vendor",
+            "slug": "existing-slug",
+            "base_url": "https://dup.example.com",
+            "auth_type": "api_key",
+        }
+
+        with TestClient(app, raise_server_exceptions=True) as client:
+            resp = client.post("/admin/vendors", json=payload)
+
+        assert resp.status_code == 409
+        data = resp.json()
+        assert "existing-slug" in data["detail"]
+        mock_db.rollback.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -561,7 +603,6 @@ class TestConfigReload:
 
         mock_registry = MagicMock()
         mock_registry.load = AsyncMock()
-        mock_registry.invalidate = MagicMock()
         mock_registry.all_vendors.return_value = [_make_vendor(), _make_vendor(id=uuid.uuid4(), slug="v2")]
 
         client = _build_app(mock_db, mock_redis)
@@ -574,7 +615,7 @@ class TestConfigReload:
         assert data["reloaded"] is True
         assert data["vendor_count"] == 2
         mock_registry.load.assert_called_once()
-        mock_registry.invalidate.assert_called_once()
+        mock_registry.invalidate.assert_not_called()
 
     def test_reload_config_requires_admin(self):
         app = create_app()

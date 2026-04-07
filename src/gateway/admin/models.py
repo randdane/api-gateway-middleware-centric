@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -17,7 +18,7 @@ class VendorCreate(BaseModel):
     name: str
     slug: str
     base_url: str
-    auth_type: str  # api_key | oauth2 | basic | custom
+    auth_type: Literal["api_key", "oauth2", "basic", "custom"]
     auth_config: dict = Field(default_factory=dict)
     cache_ttl_seconds: int = 0
     rate_limit_rpm: int = 0
@@ -26,7 +27,7 @@ class VendorCreate(BaseModel):
 class VendorUpdate(BaseModel):
     name: str | None = None
     base_url: str | None = None
-    auth_type: str | None = None
+    auth_type: Literal["api_key", "oauth2", "basic", "custom"] | None = None
     auth_config: dict | None = None
     cache_ttl_seconds: int | None = None
     rate_limit_rpm: int | None = None
@@ -72,7 +73,7 @@ class VendorQuotaResponse(BaseModel):
 class QuotaUpdate(BaseModel):
     key_id: uuid.UUID
     quota_limit: int | None = None
-    quota_period: str | None = None
+    quota_period: Literal["daily", "monthly"] | None = None
 
 
 # ---------------------------------------------------------------------------
