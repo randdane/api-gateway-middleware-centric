@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -384,6 +385,75 @@ class TestVendorErrors:
             assert not str(key_arg).startswith("cache:"), (
                 f"cache key should not be stored on 500, but got set({key_arg!r})"
             )
+
+
+class TestDedupWaiter:
+    """Dedup waiter path — another request holds the lock."""
+
+    def test_dedup_waiter_receives_result_from_lock_holder(
+        self, mock_registry, mock_redis, mock_db
+    ):
+        """Waiter should return the cached result published by the lock holder."""
+        cached_response = CachedResponse(
+            status_code=200,
+            headers={},
+            body=b'{"cached": true}',
+            cached_at=datetime.now(UTC),
+        )
+
+        @asynccontextmanager
+        async def _waiter_context(redis, key):
+            yield False
+
+        app = _build_app(mock_registry, mock_redis, mock_db)
+        with patch("gateway.routes.proxy.registry", mock_registry):
+            with patch("gateway.routes.proxy.dedup_context", _waiter_context):
+                with patch(
+                    "gateway.routes.proxy.dedup_wait",
+                    new=AsyncMock(return_value=cached_response),
+                ):
+                    with respx.mock(assert_all_called=False) as mock_transport:
+                        vendor_route = mock_transport.get(
+                            f"{VENDOR_BASE_URL}/v1/data"
+                        ).mock(
+                            return_value=httpx.Response(
+                                200, json={"should": "not_be_called"}
+                            )
+                        )
+                        with TestClient(app) as client:
+                            resp = client.get(
+                                f"/vendors/{VENDOR_SLUG}/v1/data",
+                                headers={"Authorization": "Bearer fake-token"},
+                            )
+
+                        assert not vendor_route.called
+
+        assert resp.status_code == 200
+        mock_redis.incr.assert_not_awaited()
+
+    def test_dedup_waiter_timeout_returns_504(
+        self, mock_registry, mock_redis, mock_db
+    ):
+        """When dedup_wait times out (returns None), the waiter gets a 504."""
+
+        @asynccontextmanager
+        async def _waiter_context(redis, key):
+            yield False
+
+        app = _build_app(mock_registry, mock_redis, mock_db)
+        with patch("gateway.routes.proxy.registry", mock_registry):
+            with patch("gateway.routes.proxy.dedup_context", _waiter_context):
+                with patch(
+                    "gateway.routes.proxy.dedup_wait",
+                    new=AsyncMock(return_value=None),
+                ):
+                    with TestClient(app) as client:
+                        resp = client.get(
+                            f"/vendors/{VENDOR_SLUG}/v1/data",
+                            headers={"Authorization": "Bearer fake-token"},
+                        )
+
+        assert resp.status_code == 504
 
 
 class TestQuotaExceeded:

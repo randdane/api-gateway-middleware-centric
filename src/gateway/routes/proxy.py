@@ -260,6 +260,9 @@ async def proxy(
         # ------------------------------------------------------------------
         # 7. Non-2xx: propagate without caching or incrementing quota
         # ------------------------------------------------------------------
+        # Non-2xx: propagate without caching. dedup_publish is intentionally skipped —
+        # concurrent waiters on the same dedup key will time out with 504 rather than
+        # receiving the error response.
         logger.warning(
             "proxy.vendor_error",
             vendor_slug=vendor_slug,
