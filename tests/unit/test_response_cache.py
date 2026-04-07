@@ -167,8 +167,7 @@ class TestSetCached:
         response = _make_response(status_code=200)
         await set_cached(redis, "k", response, ttl_seconds=60)
         redis.set.assert_called_once()
-        _, kwargs = redis.set.call_args[0], redis.set.call_args[1]
-        assert kwargs.get("ex") == 60 or redis.set.call_args[0][2] == 60
+        assert redis.set.call_args[1]["ex"] == 60
 
     async def test_stores_201_response(self):
         redis = _make_redis()
@@ -256,6 +255,7 @@ class TestFlushVendor:
         count = await flush_vendor(redis, "v")
         assert redis.scan.call_count == 2
         assert redis.delete.call_count == 2
+        assert count == 4
 
 
 # ---------------------------------------------------------------------------
