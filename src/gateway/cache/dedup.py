@@ -37,6 +37,12 @@ from gateway.cache.response_cache import CachedResponse
 
 _KEY_PREFIX = "dedup"
 _LOCK_TTL_SECONDS = 30
+_RESULT_TTL_SECONDS = 60
+
+
+def _result_key(key: str) -> str:
+    """Return the Redis key used to store a published result for *key*."""
+    return f"{key}:result"
 
 
 # ---------------------------------------------------------------------------
@@ -129,8 +135,15 @@ async def dedup_publish(redis: Redis, key: str, response: CachedResponse) -> Non
 
     Call this after a successful vendor call when you own the dedup lock.
     The channel name is the dedup key itself.
+
+    The serialised result is also stored in Redis under ``dedup:result:{hash}``
+    with a short TTL so that waiters which subscribe *after* the message is
+    published can still retrieve the result without hanging until their timeout.
     """
     payload = _serialise_result(response)
+    # Store first so any subscriber that wakes up after the publish can also
+    # find the result via GET (store-and-notify pattern).
+    await redis.set(_result_key(key), payload, ex=_RESULT_TTL_SECONDS)
     await redis.publish(key, payload)
 
 
@@ -143,7 +156,20 @@ async def dedup_wait(
 
     Returns the ``CachedResponse`` published by the lock holder, or ``None``
     if the timeout expires before a message arrives.
+
+    To close the race where the lock holder completes and calls
+    :func:`dedup_publish` between when this waiter checked the lock and when
+    it subscribes to the channel, we first check for a pre-stored result key
+    (written by :func:`dedup_publish` before it publishes).  If found, we
+    return immediately without ever subscribing.
     """
+    # Fast-path: result was already stored by dedup_publish before we subscribed.
+    stored = await redis.get(_result_key(key))
+    if stored is not None:
+        if isinstance(stored, bytes):
+            stored = stored.decode()
+        return _deserialise_result(stored)
+
     pubsub = redis.pubsub()
     await pubsub.subscribe(key)
     try:

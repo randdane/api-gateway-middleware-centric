@@ -16,6 +16,7 @@ from gateway.cache.dedup import (
     _acquire_lock,
     _deserialise_result,
     _release_lock,
+    _result_key,
     _serialise_result,
     dedup_context,
     dedup_publish,
@@ -45,6 +46,8 @@ def _make_response(
 
 def _make_redis(**overrides) -> AsyncMock:
     redis = AsyncMock()
+    # Default: no stored result key found (fast-path in dedup_wait is skipped).
+    redis.get = AsyncMock(return_value=None)
     for name, val in overrides.items():
         setattr(redis, name, val)
     return redis
@@ -209,6 +212,50 @@ class TestDedupPublish:
         data = json.loads(payload)
         assert data["headers"]["x-custom"] == "value"
 
+    async def test_stores_result_in_redis_before_publishing(self):
+        """dedup_publish must SET the result key before calling PUBLISH."""
+        redis = _make_redis()
+        response = _make_response()
+        key = "dedup:abc123"
+
+        call_order: list[str] = []
+        redis.set = AsyncMock(side_effect=lambda *a, **kw: call_order.append("set"))
+        redis.publish = AsyncMock(side_effect=lambda *a, **kw: call_order.append("publish"))
+
+        await dedup_publish(redis, key, response)
+
+        assert call_order == ["set", "publish"], (
+            "SET must happen before PUBLISH to avoid the race condition"
+        )
+
+    async def test_stores_result_with_correct_key_and_ttl(self):
+        """Result key is ``<key>:result`` with EX=60."""
+        redis = _make_redis()
+        response = _make_response(status_code=202, body=b"stored")
+        key = "dedup:abc123"
+
+        await dedup_publish(redis, key, response)
+
+        redis.set.assert_called_once()
+        set_args, set_kwargs = redis.set.call_args
+        assert set_args[0] == _result_key(key)
+        stored_data = json.loads(set_args[1])
+        assert stored_data["status_code"] == 202
+        assert bytes.fromhex(stored_data["body"]) == b"stored"
+        assert set_kwargs.get("ex") == 60
+
+    async def test_publish_and_set_use_same_payload(self):
+        """The payload written to Redis and sent on pub/sub must be identical."""
+        redis = _make_redis()
+        response = _make_response()
+        key = "dedup:abc123"
+
+        await dedup_publish(redis, key, response)
+
+        set_payload = redis.set.call_args[0][1]
+        publish_payload = redis.publish.call_args[0][1]
+        assert set_payload == publish_payload
+
 
 # ---------------------------------------------------------------------------
 # dedup_wait
@@ -337,6 +384,77 @@ class TestDedupWait:
         result = await dedup_wait(redis, key, timeout=5.0)
         assert result is not None
         assert result.body == response.body
+
+    # ------------------------------------------------------------------
+    # Fast-path: stored result already present (store-and-notify pattern)
+    # ------------------------------------------------------------------
+
+    async def test_returns_immediately_when_stored_result_found(self):
+        """If the result key already exists in Redis, return without subscribing."""
+        response = _make_response(status_code=200, body=b"fast")
+        key = "dedup:abc"
+        payload = _serialise_result(response)
+
+        redis = _make_redis()
+        redis.get = AsyncMock(return_value=payload)
+
+        result = await dedup_wait(redis, key, timeout=5.0)
+
+        assert result is not None
+        assert result.body == b"fast"
+        assert result.status_code == 200
+        # pubsub should never have been used
+        redis.pubsub.assert_not_called()
+
+    async def test_stored_result_as_bytes_is_decoded(self):
+        """Stored value may be raw bytes (decode_responses=False)."""
+        response = _make_response(body=b"bytes-fast")
+        key = "dedup:abc"
+        payload_bytes = _serialise_result(response).encode()
+
+        redis = _make_redis()
+        redis.get = AsyncMock(return_value=payload_bytes)
+
+        result = await dedup_wait(redis, key, timeout=5.0)
+
+        assert result is not None
+        assert result.body == b"bytes-fast"
+        redis.pubsub.assert_not_called()
+
+    async def test_checks_stored_result_key_with_correct_key(self):
+        """GET must be issued against ``<key>:result``."""
+        key = "dedup:abc"
+        redis = _make_redis()
+        # Return None so we fall through to pubsub
+        response = _make_response()
+        pubsub = AsyncMock()
+        pubsub.get_message = AsyncMock(
+            return_value=_make_pubsub_message(key, response)
+        )
+        redis.pubsub = MagicMock(return_value=pubsub)
+
+        await dedup_wait(redis, key, timeout=5.0)
+
+        redis.get.assert_called_once_with(_result_key(key))
+
+    async def test_falls_through_to_pubsub_when_no_stored_result(self):
+        """When GET returns None, the normal pub/sub path is followed."""
+        redis = _make_redis()
+        response = _make_response()
+        key = "dedup:abc"
+
+        pubsub = AsyncMock()
+        pubsub.get_message = AsyncMock(
+            return_value=_make_pubsub_message(key, response)
+        )
+        redis.pubsub = MagicMock(return_value=pubsub)
+
+        result = await dedup_wait(redis, key, timeout=5.0)
+
+        assert result is not None
+        assert result.body == response.body
+        # pubsub was used because stored key was absent
+        redis.pubsub.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
