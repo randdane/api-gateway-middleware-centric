@@ -18,7 +18,7 @@ a successful upstream response.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 import structlog
 from fastapi import Depends, HTTPException, status
@@ -31,27 +31,9 @@ from gateway.cache.redis import get_redis
 from gateway.db.models import Vendor, VendorApiKey
 from gateway.db.session import get_db
 from gateway.quota.models import QuotaExceededResponse
-from gateway.quota.tracker import check_quota
+from gateway.quota.tracker import check_quota, resets_at
 
 logger = structlog.get_logger(__name__)
-
-
-def _resets_at(period: str) -> datetime:
-    """Return the UTC datetime at which the current period resets.
-
-    - daily:   start of next UTC day
-    - monthly: start of next UTC month (1st at 00:00:00 UTC)
-    """
-    now = datetime.now(tz=timezone.utc)
-    if period == "daily":
-        tomorrow = now.date() + timedelta(days=1)
-        return datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc)
-    if period == "monthly":
-        # Advance to first day of next month
-        if now.month == 12:
-            return datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
-        return datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
-    raise ValueError(f"Unknown quota period: {period!r}")
 
 
 async def check_quota_dependency(
@@ -129,7 +111,7 @@ async def check_quota_dependency(
     # ------------------------------------------------------------------
     # 4. Quota exceeded — build 429 response body
     # ------------------------------------------------------------------
-    resets_at = _resets_at(period)
+    reset_time = resets_at(period)
 
     vendor_name = api_key.vendor.slug if api_key.vendor else vendor_slug
 
@@ -140,7 +122,7 @@ async def check_quota_dependency(
         limit=limit,
         used=current_count,
         period=period,
-        resets_at=resets_at,
+        resets_at=reset_time,
     )
 
     logger.warning(
@@ -150,7 +132,7 @@ async def check_quota_dependency(
         limit=limit,
         used=current_count,
         period=period,
-        resets_at=resets_at.isoformat(),
+        resets_at=reset_time.isoformat(),
     )
 
     raise HTTPException(

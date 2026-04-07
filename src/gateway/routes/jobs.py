@@ -29,6 +29,9 @@ async def poll_job(
             detail=f"Job '{job_id}' not found.",
         )
 
+    if job.requested_by != user.sub:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     return JobStatusResponse(
         job_id=job.id,
         status=job.status,

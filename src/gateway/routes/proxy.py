@@ -30,8 +30,7 @@ from gateway.db.models import VendorApiKey, VendorEndpoint
 from gateway.db.session import get_db
 from gateway.jobs.manager import create_job
 from gateway.jobs.models import JobCreatedResponse
-from gateway.middleware.quota import _resets_at
-from gateway.quota.tracker import check_quota, increment_quota
+from gateway.quota.tracker import check_quota, increment_quota, resets_at
 from gateway.vendors.client import VendorClient
 from gateway.vendors.registry import VendorConfig, registry
 
@@ -137,6 +136,7 @@ async def proxy(
             select(VendorEndpoint).where(
                 VendorEndpoint.vendor_id == _uuid.UUID(vendor_config.id),
                 VendorEndpoint.path == endpoint_path,
+                VendorEndpoint.method == request.method.upper(),
             )
         )
         endpoint_record = ep_result.scalar_one_or_none()
@@ -148,6 +148,7 @@ async def proxy(
             k.lower(): v
             for k, v in request.headers.items()
         }
+        stored_headers = {k: v for k, v in forward_hdrs.items() if k.lower() != "authorization"}
         request_payload = {
             "method": request.method,
             "path": endpoint_path,
@@ -158,7 +159,7 @@ async def proxy(
                 for k, v in forward_hdrs.items()
                 if k not in ("host", "authorization")
             },
-            "headers": forward_hdrs,
+            "headers": stored_headers,
         }
         job = await create_job(
             db,
@@ -216,7 +217,7 @@ async def proxy(
                     "limit": api_key.quota_limit,
                     "used": current_count,
                     "period": api_key.quota_period,
-                    "resets_at": _resets_at(api_key.quota_period).isoformat(),
+                    "resets_at": resets_at(api_key.quota_period).isoformat(),
                 },
             )
 
@@ -298,7 +299,7 @@ async def proxy(
                 cached_at=datetime.now(tz=UTC),
             )
 
-            ttl = resolve_ttl(vendor_config.cache_ttl_seconds, None)
+            ttl = resolve_ttl(vendor_config.cache_ttl_seconds, endpoint_record.cache_ttl_override if isinstance(endpoint_record, VendorEndpoint) else None)
 
             await set_cached(redis, cache_key, cached_response, ttl)
             await dedup_publish(redis, dedup_key, cached_response)

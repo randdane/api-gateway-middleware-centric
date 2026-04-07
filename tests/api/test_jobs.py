@@ -116,6 +116,7 @@ def _make_sync_endpoint() -> MagicMock:
     ep.method = "GET"
     ep.is_async_job = False
     ep.timeout_seconds = 30
+    ep.cache_ttl_override = None
     return ep
 
 

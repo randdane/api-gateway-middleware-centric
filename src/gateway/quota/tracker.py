@@ -23,7 +23,7 @@ replaced with a real upsert.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import structlog
 from redis.asyncio import Redis
@@ -45,6 +45,24 @@ MONTHLY_TTL: int = 2_678_400
 # ---------------------------------------------------------------------------
 # Period helpers
 # ---------------------------------------------------------------------------
+
+
+def resets_at(period: str) -> datetime:
+    """Return the UTC datetime at which the current period resets.
+
+    - daily:   start of next UTC day
+    - monthly: start of next UTC month (1st at 00:00:00 UTC)
+    """
+    now = datetime.now(tz=timezone.utc)
+    if period == "daily":
+        tomorrow = now.date() + timedelta(days=1)
+        return datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc)
+    if period == "monthly":
+        # Advance to first day of next month
+        if now.month == 12:
+            return datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
+        return datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
+    raise ValueError(f"Unknown quota period: {period!r}")
 
 
 def period_bucket(period: str, dt: datetime) -> str:

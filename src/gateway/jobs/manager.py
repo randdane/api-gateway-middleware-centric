@@ -125,17 +125,21 @@ async def run_job(db: AsyncSession, job: Job) -> None:
             params=params,
             timeout=float(endpoint.timeout_seconds),
         )
-        try:
-            response_json = vendor_response.json()
-        except Exception:
-            response_json = vendor_response.text
-
-        job.status = "completed"
-        job.response_payload = {
-            "status_code": vendor_response.status_code,
-            "body": response_json,
-            "headers": dict(vendor_response.headers),
-        }
+        if vendor_response.status_code >= 400:
+            job.status = "failed"
+            job.error = f"Vendor returned HTTP {vendor_response.status_code}"
+            job.response_payload = {
+                "status_code": vendor_response.status_code,
+                "headers": dict(vendor_response.headers),
+                "body": vendor_response.text,
+            }
+        else:
+            job.status = "completed"
+            job.response_payload = {
+                "status_code": vendor_response.status_code,
+                "headers": dict(vendor_response.headers),
+                "body": vendor_response.text,
+            }
         logger.info(
             "job.completed",
             job_id=str(job.id),
@@ -198,6 +202,8 @@ async def _worker_loop() -> None:
 
 async def _process_pending_jobs() -> None:
     """Fetch all pending jobs and run each in sequence under its own session."""
+    # NOTE: This query is safe only with a single worker. Multi-replica deployments
+    # should use SELECT ... FOR UPDATE SKIP LOCKED to prevent duplicate processing.
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(Job).where(Job.status == "pending").limit(50)
