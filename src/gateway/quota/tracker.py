@@ -36,7 +36,10 @@ logger = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 DAILY_TTL: int = 86_400       # 24 hours in seconds
-MONTHLY_TTL: int = 2_678_400  # ~31 days in seconds
+# 31-day window — slightly over-generous for shorter months. The calendar-month
+# bucket string ("YYYY-MM") prevents cross-month accumulation; the only cost
+# is old keys lingering in Redis for a few extra days.
+MONTHLY_TTL: int = 2_678_400
 
 
 # ---------------------------------------------------------------------------

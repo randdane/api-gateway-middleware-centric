@@ -380,6 +380,7 @@ class TestCheckQuotaDependency:
         quota_limit: int | None = 100,
         quota_period: str | None = "daily",
         is_active: bool = True,
+        vendor_slug: str = "acme",
     ) -> MagicMock:
         key = MagicMock()
         key.quota_limit = quota_limit
@@ -387,6 +388,7 @@ class TestCheckQuotaDependency:
         key.is_active = is_active
         key.vendor_id = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
         key.id = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+        key.vendor = self._make_vendor(slug=vendor_slug)
         return key
 
     def _make_vendor(self, slug: str = "acme") -> MagicMock:
@@ -403,16 +405,13 @@ class TestCheckQuotaDependency:
     ):
         from gateway.middleware.quota import check_quota_dependency
 
-        # Mock DB session: scalar_one_or_none returns api_key on first call,
-        # then vendor on second (for the vendor name lookup in the 429 path).
+        # Mock DB session: scalar_one_or_none returns api_key on the single
+        # query (vendor is eagerly loaded via selectinload, no second query).
         mock_result_key = MagicMock()
         mock_result_key.scalar_one_or_none.return_value = api_key
 
-        mock_result_vendor = MagicMock()
-        mock_result_vendor.scalar_one_or_none.return_value = vendor or self._make_vendor()
-
         db = AsyncMock()
-        db.execute = AsyncMock(side_effect=[mock_result_key, mock_result_vendor])
+        db.execute = AsyncMock(return_value=mock_result_key)
 
         redis = _make_redis(get_return=redis_get_return)
 

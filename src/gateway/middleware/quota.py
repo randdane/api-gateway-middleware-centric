@@ -25,12 +25,13 @@ from fastapi import Depends, HTTPException, status
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from gateway.cache.redis import get_redis
 from gateway.db.models import Vendor, VendorApiKey
 from gateway.db.session import get_db
 from gateway.quota.models import QuotaExceededResponse
-from gateway.quota.tracker import check_quota, period_bucket
+from gateway.quota.tracker import check_quota
 
 logger = structlog.get_logger(__name__)
 
@@ -74,6 +75,7 @@ async def check_quota_dependency(
     # ------------------------------------------------------------------
     stmt = (
         select(VendorApiKey)
+        .options(selectinload(VendorApiKey.vendor))
         .join(Vendor, VendorApiKey.vendor_id == Vendor.id)
         .where(
             Vendor.slug == vendor_slug,
@@ -129,13 +131,7 @@ async def check_quota_dependency(
     # ------------------------------------------------------------------
     resets_at = _resets_at(period)
 
-    # Load vendor name for the response body (already joined above, but we
-    # need the slug/name from the Vendor row).
-    vendor_result = await db.execute(
-        select(Vendor).where(Vendor.slug == vendor_slug)
-    )
-    vendor: Vendor | None = vendor_result.scalar_one_or_none()
-    vendor_name = vendor.slug if vendor else vendor_slug
+    vendor_name = api_key.vendor.slug if api_key.vendor else vendor_slug
 
     body = QuotaExceededResponse(
         error="quota_exceeded",
