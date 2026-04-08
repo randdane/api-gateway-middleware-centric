@@ -64,6 +64,17 @@ Four tables in `gateway/db/models.py`: `vendors`, `vendor_api_keys`, `vendor_end
 
 ### Implementation status
 
-Phases completed: 1 (scaffold), 2 (JWT auth), 3 (vendor adapters + registry).
-Remaining: Phase 4 (caching, dedup, rate limiting, quota), Phase 5 (proxy routes + async jobs), Phase 6 (admin API), Phase 7 (observability), Phase 8 (middleware assembly + deployment).
-Full plan: `.claude/plans/memoized-imagining-pebble.md`. Spec: `docs/superpowers/specs/2026-04-06-api-gateway-design.md`.
+All 8 phases complete.
+
+- Phase 1: Project scaffold, Docker, Alembic, DB models
+- Phase 2: JWT auth with JWKS + dependency injection
+- Phase 3: Vendor adapter system (api_key, oauth2, basic, custom) + registry
+- Phase 4: Response caching, request dedup, rate limiting (token bucket via Lua), quota tracking
+- Phase 5: Proxy route pipeline + async job system (create, poll, background worker, webhook)
+- Phase 6: Admin API — vendor CRUD, quota management, cache flush, config reload, health check
+- Phase 7: Structured logging (structlog/JSON), Prometheus metrics, OTel tracing
+- Phase 8: Middleware stack assembled (tracing → logging → rate limiting), `/metrics` endpoint, graceful shutdown
+
+Known stub: `sync_quota_to_db()` in `quota/tracker.py` logs instead of writing to Postgres — needs a `quota_usage` table and a real upsert.
+
+Full plan: `~/.claude/plans/memoized-imagining-pebble.md`. Spec: `docs/superpowers/specs/2026-04-06-api-gateway-design.md`.

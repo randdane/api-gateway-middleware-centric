@@ -9,6 +9,7 @@ services:
       JWKS_URL: ${JWKS_URL:-http://localhost:8080/.well-known/jwks.json}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ENVIRONMENT: ${ENVIRONMENT:-development}
+      DEBUG: ${DEBUG:-true}
     depends_on:
       postgres:
         condition: service_healthy

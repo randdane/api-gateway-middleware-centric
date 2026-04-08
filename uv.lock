@@ -53,7 +53,7 @@ wheels = [
 ]
 
 [[package]]
-name = "api-gateway"
+name = "api-gateway-middleware-centric"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

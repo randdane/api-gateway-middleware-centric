@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "api-gateway"
+name = "api-gateway-middleware-centric"
 version = "0.1.0"
 description = "Internal API gateway for vendor API access"
 requires-python = ">=3.12"

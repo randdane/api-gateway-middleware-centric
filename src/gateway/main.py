@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 import structlog
@@ -12,6 +13,7 @@ from gateway.db.session import engine
 from gateway.jobs.manager import start_background_worker
 from gateway.logging_config import configure_logging
 from gateway.middleware.logging import LoggingMiddleware
+from gateway.middleware.rate_limit import RateLimitMiddleware
 from gateway.middleware.tracing import TracingMiddleware
 from gateway.observability.tracing import setup_tracing
 from gateway.routes.jobs import router as jobs_router
@@ -33,8 +35,13 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
+    # Shutdown — cancel background worker and wait for it to finish cleanly
     worker_task.cancel()
+    try:
+        await worker_task
+    except (asyncio.CancelledError, Exception):
+        pass
+
     await close_redis()
     await engine.dispose()
     logger.info("gateway.stopped")
@@ -54,8 +61,10 @@ def create_app() -> FastAPI:
     )
 
     # Middleware order (outermost first): tracing → logging → rate limiting.
-    # add_middleware() wraps in reverse order, so TracingMiddleware is added
-    # last here so it ends up as the outermost layer.
+    # add_middleware() wraps in reverse order, so the last call here becomes
+    # the outermost layer.  RateLimitMiddleware is added first (innermost),
+    # LoggingMiddleware second, TracingMiddleware last (outermost).
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(LoggingMiddleware)
     app.add_middleware(TracingMiddleware)
 
