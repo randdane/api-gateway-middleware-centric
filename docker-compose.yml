@@ -6,10 +6,13 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://gateway:gateway@postgres:5432/gateway
       REDIS_URL: redis://redis:6379/0
-      JWKS_URL: ${JWKS_URL:-http://localhost:8080/.well-known/jwks.json}
+      JWKS_URL: ${JWKS_URL:-http://host.docker.internal:8080/.well-known/jwks.json}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       DEBUG: ${DEBUG:-true}
+      PORTAL_URL: http://host.docker.internal:8001
+      PORTAL_SHARED_SECRET: dev-shared-secret-change-me-in-production
+      REQUIRE_HTTPS: "false"
     depends_on:
       postgres:
         condition: service_healthy

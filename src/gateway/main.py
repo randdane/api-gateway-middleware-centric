@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 
+import httpx
 import structlog
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -30,6 +31,9 @@ async def lifespan(app: FastAPI):
     init_redis()
     logger.info("gateway.redis.connected")
 
+    # Shared async HTTP client for portal token validation calls.
+    app.state.http_client = httpx.AsyncClient(timeout=5.0)
+
     worker_task = start_background_worker()
     logger.info("gateway.job_worker.started")
 
@@ -42,6 +46,7 @@ async def lifespan(app: FastAPI):
     except (asyncio.CancelledError, Exception):
         pass
 
+    await app.state.http_client.aclose()
     await close_redis()
     await engine.dispose()
     logger.info("gateway.stopped")
